@@ -1,17 +1,21 @@
-# Image → Base64
+# Image → WebP Base64
 
-A tiny, fully client-side tool that converts images to Base64.
+A tiny, fully client-side tool that converts images to **WebP Base64**.
 
-**Nothing is uploaded.** Paste, drop, or pick an image — conversion runs entirely in your browser with the FileReader API. No backend, no analytics, no storage.
+**Nothing is uploaded.** Paste, drop, or pick an image — it is re-encoded to WebP in your browser (Canvas API), then exported as Base64. No backend, no analytics, no storage.
 
 ## Features
 
 - Paste an image from the clipboard (`Ctrl`/`Cmd`+`V`)
 - Drag and drop an image file
 - Choose a file from disk
-- Preview + file metadata
-- Copy raw Base64 or a full `data:` URI
-- Toggle output format and download as `.txt`
+- Re-encode to **WebP** with a quality slider (default **82%** — balanced size vs fidelity)
+- Compact / Balanced / High presets
+- Live size comparison: original vs WebP output + Base64 length
+- Preview of the encoded result
+- Copy raw Base64 or a full `data:image/webp;base64,...` URI
+- Download the Base64 as `.txt`
+- JPEG fallback if the browser cannot encode WebP
 
 ## Local use
 

@@ -14,11 +14,33 @@
   const toastEl = document.getElementById("toast");
   const fmtRaw = document.getElementById("fmt-raw");
   const fmtDataUri = document.getElementById("fmt-datauri");
+  const qualitySlider = document.getElementById("quality");
+  const qualityValue = document.getElementById("quality-value");
+  const qualityHint = document.getElementById("quality-hint");
+  const statsEl = document.getElementById("stats");
 
-  /** @type {{ raw: string, dataUri: string, name: string, type: string, size: number } | null} */
+  /** Balanced default: good visual quality with strong size wins for Base64 embeds. */
+  const DEFAULT_QUALITY = 0.82;
+  const MAX_DIMENSION = 4096;
+
+  /** @type {{
+   *   sourceName: string,
+   *   sourceType: string,
+   *   sourceSize: number,
+   *   width: number,
+   *   height: number,
+   *   quality: number,
+   *   raw: string,
+   *   dataUri: string,
+   *   outputBytes: number,
+   *   canvas: HTMLCanvasElement,
+   *   encodeMime: string
+   * } | null} */
   let current = null;
   let format = "raw";
   let toastTimer = 0;
+  let encodeGen = 0;
+  let webpSupported = null;
 
   function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes} B`;
@@ -45,57 +67,300 @@
     }
   }
 
+  function qualityLabel(q) {
+    if (q >= 0.92) return "Maximum detail · larger Base64";
+    if (q >= 0.82) return "Balanced · recommended for embeds";
+    if (q >= 0.7) return "Compact · still looks sharp";
+    if (q >= 0.55) return "Small · fine for thumbnails";
+    return "Tiny · visible compression";
+  }
+
+  function updateQualityUi(q) {
+    const pct = Math.round(q * 100);
+    qualityValue.textContent = `${pct}%`;
+    qualityHint.textContent = qualityLabel(q);
+  }
+
   function clearResult() {
+    encodeGen += 1;
     current = null;
     result.classList.add("hidden");
     preview.removeAttribute("src");
     meta.textContent = "";
+    statsEl.innerHTML = "";
     output.value = "";
     btnCopy.disabled = true;
     btnCopyDataUri.disabled = true;
     btnDownload.disabled = true;
     fileInput.value = "";
+    setQuality(DEFAULT_QUALITY, { reencodeNow: false });
+  }
+
+  function detectWebpSupport() {
+    if (webpSupported !== null) return Promise.resolve(webpSupported);
+    return new Promise((resolve) => {
+      const c = document.createElement("canvas");
+      c.width = 1;
+      c.height = 1;
+      c.toBlob(
+        (blob) => {
+          webpSupported = !!(blob && blob.type === "image/webp");
+          resolve(webpSupported);
+        },
+        "image/webp",
+        0.8
+      );
+    });
+  }
+
+  /**
+   * @param {HTMLImageElement | ImageBitmap} image
+   * @param {number} maxDim
+   */
+  function fitSize(image, maxDim) {
+    const w = "naturalWidth" in image ? image.naturalWidth : image.width;
+    const h = "naturalHeight" in image ? image.naturalHeight : image.height;
+    if (w <= maxDim && h <= maxDim) return { width: w, height: h, scaled: false };
+    const scale = Math.min(maxDim / w, maxDim / h);
+    return {
+      width: Math.max(1, Math.round(w * scale)),
+      height: Math.max(1, Math.round(h * scale)),
+      scaled: true,
+    };
+  }
+
+  /**
+   * @param {File} file
+   * @returns {Promise<HTMLImageElement>}
+   */
+  function loadImage(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("Could not decode image."));
+      };
+      img.src = url;
+    });
+  }
+
+  /**
+   * @param {HTMLCanvasElement} canvas
+   * @param {string} mime
+   * @param {number} quality
+   * @returns {Promise<Blob>}
+   */
+  function canvasToBlob(canvas, mime, quality) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) reject(new Error("Encoding failed."));
+          else resolve(blob);
+        },
+        mime,
+        quality
+      );
+    });
+  }
+
+  /**
+   * @param {Blob} blob
+   * @returns {Promise<string>}
+   */
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("Could not read encoded image."));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function savingsPercent(original, encoded) {
+    if (!original) return 0;
+    return Math.round(((original - encoded) / original) * 100);
+  }
+
+  function renderStats() {
+    if (!current) {
+      statsEl.innerHTML = "";
+      return;
+    }
+
+    const saved = savingsPercent(current.sourceSize, current.outputBytes);
+    const ratio = current.outputBytes / Math.max(current.sourceSize, 1);
+    const savedLabel =
+      saved > 0
+        ? `${saved}% smaller than original`
+        : saved < 0
+          ? `${Math.abs(saved)}% larger than original`
+          : "Same size as original";
+
+    const barWidth = Math.min(100, Math.max(4, Math.round(ratio * 100)));
+
+    statsEl.innerHTML = `
+      <div class="stat-row">
+        <span class="stat-label">Original</span>
+        <span class="stat-value">${formatBytes(current.sourceSize)} · ${escapeHtml(current.sourceType || "image")}</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">WebP output</span>
+        <span class="stat-value">${formatBytes(current.outputBytes)} · q${Math.round(current.quality * 100)}</span>
+      </div>
+      <div class="stat-bar" aria-hidden="true">
+        <div class="stat-bar-track">
+          <div class="stat-bar-fill original" style="width:100%"></div>
+          <div class="stat-bar-fill output" style="width:${barWidth}%"></div>
+        </div>
+      </div>
+      <div class="stat-savings ${saved > 0 ? "good" : saved < 0 ? "warn" : ""}">${savedLabel}</div>
+      <div class="stat-row subtle">
+        <span class="stat-label">Base64 length</span>
+        <span class="stat-value">${current.raw.length.toLocaleString()} chars</span>
+      </div>
+      <div class="stat-row subtle">
+        <span class="stat-label">Dimensions</span>
+        <span class="stat-value">${current.width}×${current.height}px</span>
+      </div>
+    `;
+  }
+
+  function applyEncodedResult(dataUri, outputBytes, quality, encodeMime) {
+    if (!current) return;
+    const comma = dataUri.indexOf(",");
+    const raw = comma >= 0 ? dataUri.slice(comma + 1) : dataUri;
+
+    current.raw = raw;
+    current.dataUri = dataUri;
+    current.outputBytes = outputBytes;
+    current.quality = quality;
+    current.encodeMime = encodeMime;
+
+    preview.src = dataUri;
+    const baseName = (current.sourceName || "image").replace(/\.[^.]+$/, "") || "image";
+    meta.innerHTML = [
+      `<div><strong>${escapeHtml(baseName)}.webp</strong></div>`,
+      `<div>image/webp · ${formatBytes(outputBytes)}</div>`,
+    ].join("");
+
+    output.value = format === "raw" ? raw : dataUri;
+    btnCopy.disabled = false;
+    btnCopyDataUri.disabled = false;
+    btnDownload.disabled = false;
+    renderStats();
+  }
+
+  /**
+   * Re-encode the current canvas at the chosen quality.
+   * @param {number} quality
+   * @param {{ silent?: boolean }} [opts]
+   */
+  /**
+   * For JPEG fallback, flatten transparency onto white.
+   * @param {HTMLCanvasElement} source
+   * @returns {HTMLCanvasElement}
+   */
+  function flattenForJpeg(source) {
+    const flat = document.createElement("canvas");
+    flat.width = source.width;
+    flat.height = source.height;
+    const ctx = flat.getContext("2d");
+    if (!ctx) return source;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, flat.width, flat.height);
+    ctx.drawImage(source, 0, 0);
+    return flat;
+  }
+
+  async function reencode(quality, opts = {}) {
+    if (!current?.canvas) return;
+    const gen = ++encodeGen;
+    const useWebp = await detectWebpSupport();
+    const mime = useWebp ? "image/webp" : "image/jpeg";
+    const encodeCanvas = useWebp ? current.canvas : flattenForJpeg(current.canvas);
+
+    try {
+      const blob = await canvasToBlob(encodeCanvas, mime, quality);
+      if (gen !== encodeGen) return;
+      const dataUri = await blobToDataUrl(blob);
+      if (gen !== encodeGen) return;
+      applyEncodedResult(dataUri, blob.size, quality, mime);
+      if (!opts.silent) {
+        const label = useWebp ? "WebP" : "JPEG";
+        showToast(`Encoded as ${label} @ ${Math.round(quality * 100)}%`);
+      }
+    } catch {
+      if (gen !== encodeGen) return;
+      showToast("Could not encode image.", "error");
+    }
   }
 
   /**
    * @param {File} file
    */
-  function processFile(file) {
+  async function processFile(file) {
     if (!file || !file.type.startsWith("image/")) {
       showToast("Please provide an image file.", "error");
       return;
     }
 
-    const reader = new FileReader();
-    reader.onerror = () => showToast("Could not read that file.", "error");
-    reader.onload = () => {
-      const dataUri = String(reader.result);
-      const comma = dataUri.indexOf(",");
-      const raw = comma >= 0 ? dataUri.slice(comma + 1) : dataUri;
+    const gen = ++encodeGen;
+    const quality = Number(qualitySlider.value) || DEFAULT_QUALITY;
+    setQuality(quality, { reencodeNow: false });
+
+    try {
+      showToast("Encoding locally…");
+      const img = await loadImage(file);
+      if (gen !== encodeGen) return;
+
+      const size = fitSize(img, MAX_DIMENSION);
+      const canvas = document.createElement("canvas");
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext("2d", { alpha: true });
+      if (!ctx) throw new Error("Canvas unsupported.");
+
+      // Preserve transparency for WebP; white fill for JPEG fallback is handled by encoder.
+      ctx.clearRect(0, 0, size.width, size.height);
+      ctx.drawImage(img, 0, 0, size.width, size.height);
 
       current = {
-        raw,
-        dataUri,
-        name: file.name || "pasted-image",
-        type: file.type,
-        size: file.size,
+        sourceName: file.name || "pasted-image",
+        sourceType: file.type,
+        sourceSize: file.size,
+        width: size.width,
+        height: size.height,
+        quality,
+        raw: "",
+        dataUri: "",
+        outputBytes: 0,
+        canvas,
+        encodeMime: "image/webp",
       };
 
-      preview.src = dataUri;
-      meta.innerHTML = [
-        `<div><strong>${escapeHtml(current.name)}</strong></div>`,
-        `<div>${escapeHtml(current.type)} · ${formatBytes(current.size)}</div>`,
-        `<div>${raw.length.toLocaleString()} base64 chars</div>`,
-      ].join("");
-
-      output.value = format === "raw" ? raw : dataUri;
-      btnCopy.disabled = false;
-      btnCopyDataUri.disabled = false;
-      btnDownload.disabled = false;
       result.classList.remove("hidden");
-      showToast("Converted locally");
-    };
-    reader.readAsDataURL(file);
+      await reencode(quality, { silent: true });
+      if (gen !== encodeGen) return;
+
+      const useWebp = await detectWebpSupport();
+      const saved = current ? savingsPercent(current.sourceSize, current.outputBytes) : 0;
+      if (!useWebp) {
+        showToast("WebP unsupported — used JPEG instead", "error");
+      } else if (saved > 0) {
+        showToast(`WebP ready · ${saved}% smaller`);
+      } else {
+        showToast("WebP ready");
+      }
+    } catch (err) {
+      if (gen !== encodeGen) return;
+      clearResult();
+      showToast(err instanceof Error ? err.message : "Could not process image.", "error");
+    }
   }
 
   function escapeHtml(str) {
@@ -107,7 +372,6 @@
   }
 
   /**
-   * Extract an image File from a paste or drop DataTransfer.
    * @param {DataTransfer | null} dt
    * @returns {File | null}
    */
@@ -138,7 +402,6 @@
       await navigator.clipboard.writeText(text);
       return true;
     } catch {
-      // Fallback for older browsers / insecure contexts
       output.focus();
       output.select();
       try {
@@ -151,7 +414,6 @@
     }
   }
 
-  // Paste anywhere on the page
   document.addEventListener("paste", (e) => {
     const file = imageFromDataTransfer(e.clipboardData);
     if (file) {
@@ -160,7 +422,6 @@
     }
   });
 
-  // Dropzone interactions
   dropzone.addEventListener("click", (e) => {
     if (e.target.closest(".file-label")) return;
     fileInput.click();
@@ -195,7 +456,6 @@
     else showToast("Drop an image file.", "error");
   });
 
-  // Also allow dropping on the whole window
   window.addEventListener("dragover", (e) => e.preventDefault());
   window.addEventListener("drop", (e) => {
     if (e.target.closest("#dropzone")) return;
@@ -207,6 +467,34 @@
   fileInput.addEventListener("change", () => {
     const file = fileInput.files && fileInput.files[0];
     if (file) processFile(file);
+  });
+
+  let qualityDebounce = 0;
+  function setQuality(q, { reencodeNow = true } = {}) {
+    const clamped = Math.min(0.98, Math.max(0.4, q));
+    qualitySlider.value = String(clamped);
+    qualitySlider.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
+    updateQualityUi(clamped);
+    document.querySelectorAll(".preset").forEach((btn) => {
+      const pq = Number(btn.getAttribute("data-quality"));
+      btn.classList.toggle("active", Math.abs(pq - clamped) < 0.001);
+    });
+    if (reencodeNow && current) {
+      window.clearTimeout(qualityDebounce);
+      qualityDebounce = window.setTimeout(() => {
+        reencode(clamped, { silent: true });
+      }, 80);
+    }
+  }
+
+  qualitySlider.addEventListener("input", () => {
+    setQuality(Number(qualitySlider.value));
+  });
+
+  document.querySelectorAll(".preset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setQuality(Number(btn.getAttribute("data-quality")));
+    });
   });
 
   fmtRaw.addEventListener("click", () => setFormat("raw"));
@@ -230,12 +518,15 @@
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const base = current.name.replace(/\.[^.]+$/, "") || "image";
+    const base = (current.sourceName || "image").replace(/\.[^.]+$/, "") || "image";
     a.href = url;
-    a.download = `${base}-base64.txt`;
+    a.download = `${base}-webp-base64.txt`;
     a.click();
     URL.revokeObjectURL(url);
   });
 
   btnClear.addEventListener("click", clearResult);
+
+  setQuality(DEFAULT_QUALITY, { reencodeNow: false });
+  detectWebpSupport();
 })();

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Convert pasted or dropped images to Base64 entirely in your browser. Nothing is uploaded." />
-  <title>Image → Base64</title>
+  <meta name="description" content="Convert images to compact WebP Base64 entirely in your browser. Nothing is uploaded." />
+  <title>Image → WebP Base64</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -19,9 +19,9 @@
     <header class="header">
       <div class="logo">
         <span class="logo-mark">64</span>
-        <span class="logo-text">Image → Base64</span>
+        <span class="logo-text">Image → WebP Base64</span>
       </div>
-      <p class="tagline">Paste, drop, or pick an image. Conversion happens locally — nothing leaves your browser.</p>
+      <p class="tagline">Paste, drop, or pick an image. It is re-encoded to WebP locally for a smaller Base64 payload — nothing leaves your browser.</p>
     </header>
 
     <section
@@ -53,39 +53,69 @@
     <section id="result" class="result hidden" aria-live="polite">
       <div class="result-top">
         <div class="preview-wrap">
-          <img id="preview" alt="Selected image preview" />
+          <img id="preview" alt="Encoded WebP preview" />
           <div class="meta" id="meta"></div>
         </div>
-        <div class="actions">
-          <button type="button" id="btn-copy" class="btn btn-primary" disabled>
-            <span class="btn-label">Copy Base64</span>
-          </button>
-          <button type="button" id="btn-copy-datauri" class="btn btn-secondary" disabled>
-            Copy data URI
-          </button>
-          <button type="button" id="btn-download" class="btn btn-ghost" disabled>
-            Download .txt
-          </button>
-          <button type="button" id="btn-clear" class="btn btn-ghost">
-            Clear
-          </button>
+
+        <div class="controls">
+          <div class="quality-panel">
+            <div class="quality-header">
+              <label for="quality">WebP quality</label>
+              <span id="quality-value" class="quality-value">82%</span>
+            </div>
+            <input
+              type="range"
+              id="quality"
+              min="0.4"
+              max="0.98"
+              step="0.01"
+              value="0.82"
+              aria-valuemin="40"
+              aria-valuemax="98"
+              aria-valuenow="82"
+              aria-describedby="quality-hint"
+            />
+            <p id="quality-hint" class="quality-hint">Balanced · recommended for embeds</p>
+            <div class="quality-presets" role="group" aria-label="Quality presets">
+              <button type="button" class="preset" data-quality="0.7">Compact</button>
+              <button type="button" class="preset active" data-quality="0.82">Balanced</button>
+              <button type="button" class="preset" data-quality="0.92">High</button>
+            </div>
+          </div>
+
+          <div id="stats" class="stats" aria-live="polite"></div>
+
+          <div class="actions">
+            <button type="button" id="btn-copy" class="btn btn-primary" disabled>
+              <span class="btn-label">Copy Base64</span>
+            </button>
+            <button type="button" id="btn-copy-datauri" class="btn btn-secondary" disabled>
+              Copy data URI
+            </button>
+            <button type="button" id="btn-download" class="btn btn-ghost" disabled>
+              Download .txt
+            </button>
+            <button type="button" id="btn-clear" class="btn btn-ghost">
+              Clear
+            </button>
+          </div>
         </div>
       </div>
 
       <div class="output-wrap">
         <div class="output-header">
-          <span class="output-label">Base64</span>
+          <span class="output-label">WebP Base64</span>
           <div class="format-toggle" role="group" aria-label="Output format">
             <button type="button" class="toggle active" data-format="raw" id="fmt-raw">Raw</button>
             <button type="button" class="toggle" data-format="datauri" id="fmt-datauri">Data URI</button>
           </div>
         </div>
-        <textarea id="output" class="output" readonly spellcheck="false" aria-label="Base64 output"></textarea>
+        <textarea id="output" class="output" readonly spellcheck="false" aria-label="WebP Base64 output"></textarea>
       </div>
     </section>
 
     <footer class="footer">
-      <p>Runs entirely in your browser. No uploads, no cookies, no server storage.</p>
+      <p>Encodes to WebP in your browser. No uploads, no cookies, no server storage.</p>
     </footer>
   </main>
 
